@@ -52,9 +52,9 @@ export default function Analytics() {
 
   const catDrift = (data?.categoryDrift || []).slice(0, 6);
 
-  // Category breakdown from most recent summary
+  // ✅ FIX: Correctly parsing plain object directly with Object.entries
   const catData = summaries[0]?.total_by_category
-    ? Object.entries(Object.fromEntries(summaries[0].total_by_category))
+    ? Object.entries(summaries[0].total_by_category)
         .map(([name, value]) => ({ name, value: Math.round(value) }))
         .sort((a, b) => b.value - a.value)
     : [];
@@ -73,7 +73,6 @@ export default function Analytics() {
           <p className="page-subtitle">6-month spending history & anomaly intelligence</p>
         </div>
 
-        {/* Best/worst month badges */}
         {data?.best_month && (
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ textAlign: "right" }}>
@@ -88,7 +87,6 @@ export default function Analytics() {
         )}
       </div>
 
-      {/* Tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 28, borderBottom: "1px solid var(--border)", paddingBottom: 0 }}>
         {TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -105,7 +103,6 @@ export default function Analytics() {
 
       {tab === "overview" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          {/* Monthly spend vs budget */}
           <div className="card">
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, marginBottom: 20 }}>Monthly Spend vs Budget</div>
             <ResponsiveContainer width="100%" height={220}>
@@ -123,7 +120,6 @@ export default function Analytics() {
           </div>
 
           <div className="grid-2">
-            {/* Savings rate trend */}
             <div className="card">
               <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, marginBottom: 16 }}>Savings Rate Trend</div>
               <ResponsiveContainer width="100%" height={160}>
@@ -136,7 +132,6 @@ export default function Analytics() {
               </ResponsiveContainer>
             </div>
 
-            {/* Category breakdown */}
             <div className="card">
               <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, marginBottom: 16 }}>Category Breakdown</div>
               {catData.length > 0 ? (
@@ -147,7 +142,12 @@ export default function Analytics() {
                         <Cell key={i} fill={getCategoryColor(entry.name)} />
                       ))}
                     </Pie>
+                    {/* ✅ FIX: Legend Layout fixed to the right to prevent overlap */}
                     <Legend
+                      layout="vertical"
+                      verticalAlign="middle"
+                      align="right"
+                      wrapperStyle={{ paddingLeft: "10px" }}
                       formatter={(value) => <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{value}</span>}
                     />
                     <Tooltip contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} formatter={(v) => [formatCurrencyFull(v, user?.currency), ""]} />
@@ -159,7 +159,6 @@ export default function Analytics() {
             </div>
           </div>
 
-          {/* Category drift */}
           {catDrift.length > 0 && (
             <div className="card">
               <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, marginBottom: 16 }}>Category Drift (vs last month)</div>
