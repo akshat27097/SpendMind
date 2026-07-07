@@ -22,4 +22,5 @@ export const expenseApi = {
 // Coach
 export const coachApi = {
   getInsights: () => api.get("/coach/insights"),
+  sendChat: (data) => api.post("/coach/insights", data)
 };

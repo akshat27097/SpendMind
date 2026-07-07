@@ -1,140 +1,129 @@
+import { GoogleGenAI } from "@google/genai";
 import Expense from "../models/Expense.js";
 import MonthlySummary from "../models/MonthlySummary.js";
 
-// Simple rule-based AI coach using stored summary data
-// (No external LLM needed — powered by SpendMind's own insights)
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 export const getCoachInsights = async (req, res) => {
   try {
-    const user = req.user;
+    const user = req.user; 
+    const { chatMessage, chatHistory = [] } = req.body || {}; 
+    
     const now = new Date();
     const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const [currentSummary, pastSummaries, recentAnomalies] = await Promise.all([
+    // 1. Gather Database Info (This rarely fails)
+    const [currentSummaryDoc, pastSummaries, recentAnomalies] = await Promise.all([
       MonthlySummary.findOne({ user_id: user._id, month }),
-      MonthlySummary.find({ user_id: user._id }).sort({ month: -1 }).limit(6),
+      MonthlySummary.find({ user_id: user._id }).sort({ month: -1 }).limit(3),
       Expense.find({ user_id: user._id, is_anomaly: true }).sort({ date: -1 }).limit(5),
     ]);
 
-    const messages = [];
+    const currentSummary = currentSummaryDoc ? currentSummaryDoc.toObject() : null;
+    const categoryTotals = currentSummary?.total_by_category || {};
 
-    // Budget status
-    if (currentSummary?.budget_utilization !== null) {
-      const util = currentSummary.budget_utilization;
-      if (util > 100) {
-        messages.push({
-          type: "danger",
-          icon: "🔴",
-          title: "Over Budget",
-          body: `You've spent ${util.toFixed(1)}% of your monthly budget. Consider pausing non-essential purchases.`,
-        });
-      } else if (util > 80) {
-        messages.push({
-          type: "warning",
-          icon: "🟡",
-          title: "Budget Alert",
-          body: `${util.toFixed(1)}% of your budget is used. You're on track but watch your spending in the coming days.`,
-        });
-      } else {
-        messages.push({
-          type: "success",
-          icon: "🟢",
-          title: "Budget on Track",
-          body: `Only ${util.toFixed(1)}% used this month — great discipline so far!`,
-        });
-      }
-    }
+    const financeContext = {
+      userProfile: {
+        name: user.name,
+        currency: user.currency || "INR",
+        monthlyIncome: user.monthly_income,
+        monthlyBudget: user.monthly_budget,
+      },
+      currentMonthPerformance: currentSummary ? {
+        month: currentSummary.month,
+        totalSpent: currentSummary.monthly_total,
+        budgetUtilizationPct: currentSummary.budget_utilization ? currentSummary.budget_utilization.toFixed(1) + "%" : "0%",
+        savingsRatePct: currentSummary.savings_rate ? currentSummary.savings_rate.toFixed(1) + "%" : "0%",
+        topCategoryTotals: categoryTotals,
+      } : "No recorded metrics for this current month yet.",
+      recentFlaggedAnomalies: recentAnomalies.map(e => ({
+        amount: e.amount,
+        category: e.category,
+        date: e.date,
+        reasonFlagged: e.anomaly_message
+      }))
+    };
 
-    // Savings rate
-    if (currentSummary?.savings_rate !== null && currentSummary?.savings_rate !== undefined) {
-      const rate = currentSummary.savings_rate;
-      if (rate >= 30) {
-        messages.push({
-          type: "success",
-          icon: "💰",
-          title: "Excellent Savings",
-          body: `You're saving ${rate}% of income this month — that's exceptional. The 30% rule says you're financially thriving.`,
-        });
-      } else if (rate < 10 && rate >= 0) {
-        messages.push({
-          type: "warning",
-          icon: "📉",
-          title: "Low Savings Rate",
-          body: `Saving only ${rate}% this month. Target at least 20% for financial security.`,
-        });
-      } else if (rate < 0) {
-        messages.push({
-          type: "danger",
-          icon: "⚠️",
-          title: "Spending Exceeds Income",
-          body: `You're spending more than you earn this month. Review your largest categories immediately.`,
-        });
-      }
-    }
+    const systemInstruction = `
+      You are an expert AI Financial Coach for the SpendMind app.
+      
+      CONTEXT:
+      ${JSON.stringify(financeContext, null, 2)}
 
-    // Anomaly coach
-    if (recentAnomalies.length > 0) {
-      const categories = [...new Set(recentAnomalies.map((e) => e.category))];
-      messages.push({
-        type: "info",
-        icon: "🔍",
-        title: "Unusual Spending Detected",
-        body: `${recentAnomalies.length} unusual expense${recentAnomalies.length > 1 ? "s" : ""} flagged recently in: ${categories.join(", ")}. Review to ensure accuracy.`,
-        expenses: recentAnomalies.map((e) => ({
-          amount: e.amount,
-          category: e.category,
-          date: e.date,
-          message: e.anomaly_message,
-        })),
+      OUTPUT RULES (CRITICAL):
+      1. STYLE: Professional, friendly, and concise.
+      2. FORMATTING: Use Markdown strictly. 
+         - Use **Bold** for all key metrics and financial advice.
+         - Use "- " for every bullet point.
+         - You MUST include a double line break (\\n\\n) after every bullet point and between paragraphs for readability.
+      3. BREVITY: Keep all responses under 150 words.
+      4. GUARDRAILS: Only answer personal finance/budgeting questions.
+      5. PERSONALIZATION: Address the user as ${user.name}.
+    `;
+
+    // 2. Safely Initialize the AI SDK 
+    let ai;
+    try {
+      if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is missing from your .env file.");
+      ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    } catch (initErr) {
+      console.error("AI Configuration Error:", initErr.message);
+      // Return a 200 OK, but send the error to the UI
+      if (chatMessage) return res.json({ reply: `⚠️ System Error: ${initErr.message}` });
+      return res.json({ 
+        messages: [{ type: "danger", icon: "⚠️", title: "Configuration Error", body: initErr.message }],
+        summary_available: !!currentSummary, month 
       });
     }
 
-    // Month-over-month trend
-    if (pastSummaries.length >= 2) {
-      const [curr, prev] = pastSummaries;
-      if (curr && prev && prev.monthly_total > 0) {
-        const change = ((curr.monthly_total - prev.monthly_total) / prev.monthly_total) * 100;
-        if (change > 20) {
-          messages.push({
-            type: "warning",
-            icon: "📈",
-            title: "Spending Increased",
-            body: `This month's spending is up ${change.toFixed(0)}% vs last month. Identify what's driving the increase.`,
-          });
-        } else if (change < -15) {
-          messages.push({
-            type: "success",
-            icon: "📉",
-            title: "Great Improvement",
-            body: `You've reduced spending by ${Math.abs(change).toFixed(0)}% compared to last month. Keep it up!`,
-          });
-        }
+    // 3. Attempt the API Call to Google
+    try {
+      if (chatMessage) {
+        // Chatbot Mode
+        const formattedHistory = chatHistory.map(msg => ({
+            role: msg.role === "model" ? "model" : "user",
+            parts: [{ text: msg.text || "" }]
+        }));
+
+        const chat = ai.chats.create({
+          model: GEMINI_MODEL,
+          config: { systemInstruction }
+        });
+        
+        if (formattedHistory.length > 0) chat.history = formattedHistory; 
+
+        const response = await chat.sendMessage({ message: chatMessage });
+        return res.json({ reply: response.text });
+      } 
+      else {
+        // Initial Dashboard Page Load Mode
+        const prompt = "Analyze my current metrics provided in your profile context and deliver a short 3-bullet point update regarding my budget health, savings velocity, and anomalies.";
+        
+        const response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: prompt,
+          config: { systemInstruction }
+        });
+
+        return res.json({ 
+          messages: [{ type: "info", icon: "🧠", title: "SpendMind Analysis", body: response.text }],
+          summary_available: !!currentSummary, month
+        });
       }
+    } catch (aiErr) {
+      // 🚨 If Gemini rejects the request (e.g. invalid key, quota exceeded), catch it here!
+      console.error("Gemini API Error details logged to server:", aiErr.message);
+      
+      if (chatMessage) return res.json({ reply: `⚠️ AI Connection Error: ${aiErr.message}` });
+      return res.json({ 
+        messages: [{ type: "danger", icon: "🔌", title: "AI Connection Error", body: `Failed to reach Google Gemini: ${aiErr.message}` }],
+        summary_available: !!currentSummary, month
+      });
     }
 
-    // Top category insight
-    if (currentSummary?.total_by_category) {
-      const cats = Object.fromEntries(currentSummary.total_by_category);
-      const top = Object.entries(cats).sort(([, a], [, b]) => b - a)[0];
-      if (top) {
-        const pct = Math.round((top[1] / currentSummary.monthly_total) * 100);
-        if (pct > 40) {
-          messages.push({
-            type: "info",
-            icon: "📊",
-            title: `High ${top[0].charAt(0).toUpperCase() + top[0].slice(1)} Spend`,
-            body: `${top[0].charAt(0).toUpperCase() + top[0].slice(1)} accounts for ${pct}% of your total spend this month. Is that intentional?`,
-          });
-        }
-      }
-    }
-
-    res.json({
-      messages: messages.slice(0, 5),
-      summary_available: !!currentSummary,
-      month,
-    });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+  } catch (dbErr) {
+    // Only throw a real 500 if the MongoDB Database itself crashes
+    console.error("Database Error:", dbErr);
+    res.status(500).json({ message: "Fatal database error: " + dbErr.message });
   }
 };
